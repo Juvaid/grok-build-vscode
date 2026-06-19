@@ -310,47 +310,11 @@
   function initMermaid() { if (GrokMd.initMermaid) GrokMd.initMermaid(); }
   function renderMermaidIn(r) { if (GrokMd.renderMermaidIn) GrokMd.renderMermaidIn(r); }
 
-  // ---------- math / diagram export ----------
-  // Display math and rendered mermaid both end up as a self-contained <svg> in an
-  // export host (.math-export / .mermaid-block) carrying the source. From the hover
-  // actions we Copy that source, or render the SVG to a file: SVG verbatim, or a
-  // PNG rasterized via canvas. Exports match the VS Code theme (sidebar background +
-  // foreground) so a saved image looks like what's on screen — a dark diagram stays
-  // dark — and so math (currentColor) resolves to the theme text color rather than
-  // rasterizing as the default black on a transparent background.
-
-  function canRasterize() {
-    try { return !!document.createElement("canvas").getContext("2d"); } catch (_) { return false; }
-  }
-
-  function themeVar(name, fallback) {
-    try {
-      const v = getComputedStyle(document.body).getPropertyValue(name).trim();
-      return v || fallback;
-    } catch (_) { return fallback; }
-  }
-
-  // The on-screen surface colors, so exports are WYSIWYG. The chat sits on
-  // --vscode-sideBar-background with --vscode-foreground text (see chat.css).
-  function exportColors() {
-    return {
-      bg: themeVar("--vscode-sideBar-background", "#1e1e1e"),
-      fg: themeVar("--vscode-foreground", "#cccccc"),
-    };
-  }
-
-  // Clone the on-screen SVG into a standalone one. `color` resolves the math
-  // currentColor (pass null to leave mermaid's own palette alone); `bg` paints a
-  // solid background, or null/"" for transparent (reusable on any surface).
-  function themedSvg(svgEl, color, bg) {
-    const clone = svgEl.cloneNode(true);
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    let style = clone.getAttribute("style") || "";
-    if (color) style += `;color:${color}`;
-    if (bg) style += `;background:${bg}`;
-    clone.setAttribute("style", style);
-    return new XMLSerializer().serializeToString(clone);
-  }
+  // (export helpers moved to media/markdown.js)
+  function canRasterize() { return GrokMd.canRasterize ? GrokMd.canRasterize() : false; }
+  function themeVar(n, f) { return GrokMd.themeVar ? GrokMd.themeVar(n, f) : f; }
+  function exportColors() { return GrokMd.exportColors ? GrokMd.exportColors() : {bg:'#1e1e1e', fg:'#ccc'}; }
+  function themedSvg(el, c, b) { return GrokMd.themedSvg ? GrokMd.themedSvg(el, c, b) : ''; }
 
   // Re-render a mermaid diagram with a specific built-in theme for export, so a
   // "for light background" file gets mermaid's light palette instead of the
@@ -409,37 +373,10 @@
   // the host quick-picks which to save. Math recolors via currentColor; mermaid is
   // re-rendered in each theme since its palette is baked into the SVG.
   async function exportExpr(host, action) {
-    const svgEl = host.querySelector("svg");
-    if (!svgEl) return;
-    const kind = host.getAttribute("data-export-kind") || "latex";
-    const colors = exportColors();
-    const rect = svgEl.getBoundingClientRect();
-    const w = rect.width || 320, h = rect.height || 100;
-
-    // PNG always keeps the VS Code theme background — what you see in the sidebar.
-    const wysiwyg = themedSvg(svgEl, colors.fg, colors.bg);
-    let png = null;
-    if (canRasterize()) {
-      try { png = await svgToPng(wysiwyg, w, h, 3, colors.bg); } catch (_) { png = null; }
+    const payload = GrokMd.exportExpr ? await GrokMd.exportExpr(host, action) : null;
+    if (payload) {
+      vscode.postMessage({ type: "exportExpr", action, ...payload });
     }
-
-    if (action === "open") {
-      vscode.postMessage({ type: "exportExpr", action, kind, svg: wysiwyg, png });
-      return;
-    }
-
-    // Download: also produce transparent SVGs for dark and light backgrounds.
-    let svgDark, svgLight;
-    if (kind === "mermaid") {
-      const src = host.getAttribute("data-export-src") || "";
-      svgDark = await mermaidThemedSvg(src, "dark", svgEl);
-      svgLight = await mermaidThemedSvg(src, "default", svgEl);
-    } else {
-      svgDark = themedSvg(svgEl, "#e8e8e8", null);  // light ink for a dark surface
-      svgLight = themedSvg(svgEl, "#1f1f1f", null); // dark ink for a light surface
-    }
-    const current = document.body.classList.contains("vscode-light") ? "light" : "dark";
-    vscode.postMessage({ type: "exportExpr", action, kind, png, svgDark, svgLight, current });
   }
 
   function renderDiffCode(code) {
