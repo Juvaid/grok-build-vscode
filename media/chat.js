@@ -274,6 +274,10 @@
 
   const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, shouldStickToBottom, splitMath, stripUnsupportedTex } = globalThis.GrokWebviewHelpers;
 
+  // Markdown module (LaTeX, Mermaid, export) — extracted to media/markdown.js
+  const GrokMd = globalThis.GrokMarkdown || {};
+  const { renderMath, renderMermaidIn, upgradeMathInDom, initMathJax: mdInitMath, initMermaid: mdInitMermaid } = GrokMd;
+
   function escapeAttr(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
@@ -296,170 +300,15 @@
     );
   }
 
-  // Render one LaTeX span to an SVG string via the vendored MathJax (loaded
-  // before this script as a global). MathJax outputs self-contained SVG, which
-  // lets us export equations later; on a parse error it renders an <merror> node
-  // rather than throwing, so one bad expression never blanks the message. Until
-  // MathJax's async startup completes — or if it never loads (happy-dom unit
-  // tests) — fall back to the escaped raw TeX so the text is at least readable.
-  let mathReady = false;
+  // Math / Mermaid now come from the extracted module (media/markdown.js).
+  // These are thin shims so the rest of chat.js can continue calling the same names.
+  function initMathJax() { if (GrokMd.initMathJax) GrokMd.initMathJax(); }
+  function renderMath(l, d) { return GrokMd.renderMath ? GrokMd.renderMath(l, d) : ""; }
+  function upgradeMathInDom() { if (GrokMd.upgradeMathInDom) GrokMd.upgradeMathInDom(); }
 
-  function initMathJax() {
-    const MJ = globalThis.MathJax;
-    if (!MJ) return;
-    if (typeof MJ.tex2svg === "function") { mathReady = true; return; }
-    // tex2svg is wired up by MathJax's startup; gate on its promise, then upgrade
-    // any math that already rendered as a raw fallback before startup finished.
-    const p = MJ.startup && MJ.startup.promise;
-    if (p && typeof p.then === "function") {
-      p.then(() => { mathReady = true; upgradeMathInDom(); }).catch(() => {});
-    }
-  }
-
-  function rawMath(src, display) {
-    const esc = escapeHtml(src);
-    return display
-      ? `<span class="math-raw math-display">${esc}</span>`
-      : `<span class="math-raw">${esc}</span>`;
-  }
-
-  function renderMath(latex, display) {
-    const orig = (latex == null ? "" : String(latex)).trim();
-    const src = stripUnsupportedTex(orig);
-    const MJ = globalThis.MathJax;
-    let inner = null;
-    if (mathReady && MJ && typeof MJ.tex2svg === "function") {
-      try {
-        const node = MJ.tex2svg(src, { display: !!display });
-        if (node && node.outerHTML) inner = node.outerHTML;
-      } catch (_) {
-        // fall through to the raw fallback
-      }
-    }
-    if (inner == null) inner = rawMath(src, display);
-    // Inline math flows in the text with no chrome. Display math becomes an export
-    // host carrying the original TeX (for Copy) and the hover actions. The dm block
-    // branch in renderMarkdown emits the placeholder, and .math-export is block.
-    if (!display) return inner;
-    return `<span class="math-export" data-export-kind="latex" data-export-src="${escapeAttr(orig)}">` +
-      inner + exprActionsHtml("latex") + `</span>`;
-  }
-
-  // MathJax startup is async, so math rendered during page boot (welcome screen,
-  // a restored session) may have landed as raw fallback. Once startup resolves,
-  // re-typeset those in place: display math from its host's stored TeX (replacing
-  // the whole .math-export host so we don't double-wrap), inline from its text.
-  function upgradeMathInDom() {
-    document.querySelectorAll(".math-raw").forEach((span) => {
-      const display = span.classList.contains("math-display");
-      // Display fallbacks live inside a .math-export host — replace the host (and
-      // re-render from its faithful, un-stripped TeX), not just the inner span.
-      const host = display ? (span.closest(".math-export") || span) : span;
-      const srcAttr = host.getAttribute && host.getAttribute("data-export-src");
-      const src = (display && srcAttr != null) ? srcAttr : span.textContent;
-      const tmp = document.createElement("div");
-      tmp.innerHTML = renderMath(src, display);
-      const node = tmp.firstChild;
-      if (node && host.parentNode) host.parentNode.replaceChild(node, host);
-    });
-  }
-
-  // ---------- mermaid diagrams ----------
-  // Grok emits ```mermaid fenced blocks. renderMarkdown turns each into a
-  // .mermaid-block placeholder (showing the source as a fallback code block);
-  // this pass renders it to SVG with the vendored mermaid lib. mermaid.render is
-  // async and needs the live DOM (it measures text), so unlike the synchronous
-  // math render we can't do it inline in renderMarkdown — we post-process the
-  // inserted element instead.
-  //
-  // The streaming agent bubble re-runs renderMarkdown (and rebuilds the DOM) on
-  // every animation frame, so the SVG is destroyed and the placeholder recreated
-  // each frame. Two module-level caches keyed by the diagram source keep that
-  // flicker-free and cheap: `mermaidSvgCache` lets a re-render re-apply the SVG
-  // synchronously in the same frame (cache hit → no flash), and `mermaidInFlight`
-  // stops the same diagram being rendered dozens of times before the first async
-  // render resolves. A failed render caches null and leaves the readable source.
-  const mermaidSvgCache = new Map(); // src -> svg string, or null if render failed
-  const mermaidInFlight = new Set(); // src currently being rendered
-  let mermaidIdSeq = 0;
-  let mermaidReady = false;
-
-  function initMermaid() {
-    const m = globalThis.mermaid;
-    if (!m || typeof m.initialize !== "function") return;
-    const light = document.body.classList.contains("vscode-light");
-    try {
-      m.initialize({
-        startOnLoad: false,
-        securityLevel: "strict",
-        suppressErrorRendering: true,
-        theme: light ? "default" : "dark",
-        fontFamily: "var(--vscode-font-family, sans-serif)",
-      });
-      mermaidReady = true;
-    } catch (_) {
-      mermaidReady = false;
-    }
-  }
-
-  function mermaidSourceOf(block) {
-    const codeEl = block.querySelector(".mermaid-src code") || block.querySelector(".mermaid-src");
-    return (codeEl ? codeEl.textContent : "").trim();
-  }
-
-  // Swap the rendered SVG into a mermaid block and turn it into an export host:
-  // retain the source (for Copy) and add the Copy/Download/Open hover actions. The
-  // streaming re-render rebuilds the block (with its .mermaid-src fallback) each
-  // frame, so this re-runs per frame from the cache — keep it idempotent.
-  function decorateMermaid(block, svg, src) {
-    block.innerHTML = svg + exprActionsHtml("mermaid");
-    block.setAttribute("data-export-kind", "mermaid");
-    block.setAttribute("data-export-src", src);
-    block.setAttribute("data-mermaid-state", "done");
-  }
-
-  // Replace every still-unrendered placeholder whose source matches `src` with the
-  // cached SVG. Scans the live document because the streaming re-render may have
-  // swapped out the element that originally kicked off the render.
-  function applyCachedMermaid(src) {
-    const svg = mermaidSvgCache.get(src);
-    if (!svg) return;
-    document.querySelectorAll(".mermaid-block").forEach((block) => {
-      if (block.getAttribute("data-mermaid-state") === "done") return;
-      if (mermaidSourceOf(block) === src) {
-        decorateMermaid(block, svg, src);
-      }
-    });
-  }
-
-  function renderMermaidIn(root) {
-    if (!root || typeof root.querySelectorAll !== "function") return;
-    const blocks = root.querySelectorAll(".mermaid-block");
-    if (!blocks.length) return;
-    const m = globalThis.mermaid;
-    if (!mermaidReady || !m || typeof m.render !== "function") return; // not loaded → readable fallback stays
-    blocks.forEach((block) => {
-      if (block.getAttribute("data-mermaid-state") === "done") return;
-      const src = mermaidSourceOf(block);
-      if (!src) return;
-      if (mermaidSvgCache.has(src)) {
-        const svg = mermaidSvgCache.get(src);
-        if (svg) decorateMermaid(block, svg, src);
-        return; // null → render failed earlier; keep the source fallback
-      }
-      if (mermaidInFlight.has(src)) return; // already rendering; the cache will fill in shortly
-      mermaidInFlight.add(src);
-      const id = "grok-mmd-" + (mermaidIdSeq++);
-      Promise.resolve()
-        .then(() => m.render(id, src))
-        .then((res) => { mermaidSvgCache.set(src, (res && res.svg) || null); })
-        .catch(() => { mermaidSvgCache.set(src, null); })
-        .then(() => {
-          mermaidInFlight.delete(src);
-          applyCachedMermaid(src);
-        });
-    });
-  }
+  // Mermaid now delegated to the module.
+  function initMermaid() { if (GrokMd.initMermaid) GrokMd.initMermaid(); }
+  function renderMermaidIn(r) { if (GrokMd.renderMermaidIn) GrokMd.renderMermaidIn(r); }
 
   // ---------- math / diagram export ----------
   // Display math and rendered mermaid both end up as a self-contained <svg> in an
@@ -842,51 +691,11 @@
       .replace(/\x00M(\d+)\x00/g, (_, i) => mathHtml[+i]);
   }
 
-  // ---------- popovers ----------
-
-  function closePopovers() {
-    modePopover.hidden = true;
-    gearPopover.hidden = true;
-    addPopover.hidden = true;
-    historyPopover.hidden = true;
-  }
-
-  function positionPopover(popover, btn) {
-    const composerRect = popover.parentElement.getBoundingClientRect();
-    const btnRect = btn.getBoundingClientRect();
-    popover.style.top = "auto";
-    popover.style.bottom = (composerRect.bottom - btnRect.top + 4) + "px";
-    popover.style.left = (btnRect.left - composerRect.left) + "px";
-    popover.style.right = "auto";
-    requestAnimationFrame(() => {
-      const pw = popover.getBoundingClientRect().width;
-      const leftOffset = btnRect.left - composerRect.left;
-      if (leftOffset + pw > composerRect.width) {
-        popover.style.left = Math.max(0, composerRect.width - pw) + "px";
-      }
-    });
-  }
-
-  function positionDropdownPopover(popover, btn) {
-    const parentRect = popover.parentElement.getBoundingClientRect();
-    const btnRect = btn.getBoundingClientRect();
-    const EDGE = 6; // gap kept from the panel's right edge (and minimum gap on the left)
-    popover.style.bottom = "auto";
-    popover.style.top = (btnRect.bottom - parentRect.top + 4) + "px";
-    // Right-align to the panel edge (respecting padding) and grow leftward. The width
-    // isn't settled when it opens — session rows stream in asynchronously (requestSessions
-    // → "sessions" message → render) and widen it from min-width toward max-width — so a
-    // left-anchor + one-shot overflow clamp (measured before those rows arrived) spilled
-    // off the right edge and only looked right on reopen. Right-anchoring is width-
-    // independent: no measurement, no reflow jump. We also cap the width to the panel
-    // (overriding the CSS min/max) so a long session name ellipsizes instead of
-    // overflowing the LEFT edge in a narrow panel — common-case sizing, not extreme.
-    popover.style.left = "auto";
-    popover.style.right = EDGE + "px";
-    const available = Math.max(0, parentRect.width - EDGE * 2);
-    popover.style.maxWidth = Math.min(360, available) + "px";
-    popover.style.minWidth = Math.min(280, available) + "px";
-  }
+  // Popover positioning now lives in the extracted media/popovers.js module.
+  const GrokPop = globalThis.GrokPopovers || {};
+  function closePopovers() { if (GrokPop.closePopovers) GrokPop.closePopovers(); }
+  function positionPopover(p, b) { if (GrokPop.positionPopover) GrokPop.positionPopover(p, b); }
+  function positionDropdownPopover(p, b) { if (GrokPop.positionDropdownPopover) GrokPop.positionDropdownPopover(p, b); }
 
   // ---------- gear popover ----------
 
