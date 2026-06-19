@@ -43,10 +43,14 @@ export function resolveVoiceKey(opts: {
   const setting = (opts.setting || "").trim();
   if (setting) return setting;
   const env = opts.env || {};
-  for (const name of ["GROK_VOICE_API_KEY", "XAI_API_KEY"]) {
+  // Prefer dedicated voice key, then generic XAI, then any XAI key that might have STT access.
+  for (const name of ["GROK_VOICE_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY" /* unlikely but */]) {
     const v = (env[name] || "").trim();
     if (v) return v;
   }
+  // Also check the generic one that the CLI might use.
+  const cli = (env["XAI_API_KEY"] || env["GROK_CODE_XAI_API_KEY"] || "").trim();
+  if (cli) return cli;
   return undefined;
 }
 

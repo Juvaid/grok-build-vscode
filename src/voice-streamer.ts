@@ -15,7 +15,7 @@ import {
   joinSegments,
   TranscriptSegment,
 } from "./voice";
-import { resolveWindowsAudioDevice } from "./voice-recorder";
+import { resolveWindowsAudioDevice, resolveMacAudioDevice } from "./voice-recorder";
 
 export interface StreamStartOpts {
   ffmpegPath: string;
@@ -94,10 +94,16 @@ export class VoiceStreamer extends EventEmitter {
 
   private async beginCapture(opts: StreamStartOpts): Promise<void> {
     let device = opts.device;
-    if (process.platform === "win32" && !device) {
-      device = await resolveWindowsAudioDevice(opts.ffmpegPath, opts.log);
-      if (!device) {
-        throw new Error("No microphone (DirectShow audio device) was found. Set grok.voiceInputDevice to its name.");
+    const plat = process.platform;
+    if (!device) {
+      if (plat === "win32") {
+        device = await resolveWindowsAudioDevice(opts.ffmpegPath, opts.log);
+        if (!device) {
+          throw new Error("No microphone (DirectShow audio device) was found. Set grok.voiceInputDevice to its name.");
+        }
+      } else if (plat === "darwin") {
+        device = await resolveMacAudioDevice(opts.ffmpegPath, opts.log);
+        if (!device) device = ":0";
       }
     }
     const args = buildFfmpegStreamArgs(process.platform, { device });

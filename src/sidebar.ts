@@ -1845,8 +1845,14 @@ See design doc for the full state machine diagram.`;
    *  product (api.x.ai/v1/stt) that wants a console.x.ai developer key. */
   private resolveVoiceApiKey(cwd: string): string | undefined {
     const setting = vscode.workspace.getConfiguration("grok").get<string>("voiceApiKey", "");
-    const env = { ...process.env, ...this.readDotEnv(cwd) } as Record<string, string | undefined>;
-    return resolveVoiceKey({ setting, env });
+    const dot = this.readDotEnv(cwd);
+    const env = { ...process.env, ...dot } as Record<string, string | undefined>;
+    const key = resolveVoiceKey({ setting, env });
+    if (key) {
+      const masked = key.length > 8 ? key.slice(0, 4) + "..." + key.slice(-4) : "****";
+      this.output.appendLine(`[voice] using STT key ${masked} (source: ${setting ? "setting" : Object.keys(dot).some(k => k.includes("VOICE") || k.includes("XAI")) ? ".env" : "env"})`);
+    }
+    return key;
   }
 
   /** Tell the webview whether a voice API key is resolvable, so the mic button
@@ -2552,18 +2558,38 @@ See design doc for the full state machine diagram.`;
    *  both the CLI env builder and the voice key resolver. */
   private readDotEnv(cwd: string): Record<string, string> {
     const dotEnv: Record<string, string> = {};
-    try {
-      const content = fs.readFileSync(path.join(cwd, ".env"), "utf8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eq = trimmed.indexOf("=");
-        if (eq < 1) continue;
-        const key = trimmed.slice(0, eq).trim();
-        const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-        if (key) dotEnv[key] = val;
+    const candidates = [
+      path.join(cwd, ".env"),
+      path.join(cwd, ".env.local"),
+      path.join(cwd, ".env.development"),
+      // Also check parent for monorepos or if cwd is a subdir
+      path.join(path.dirname(cwd), ".env"),
+    ];
+    for (const envPath of candidates) {
+      try {
+        const content = fs.readFileSync(envPath, "utf8");
+        for (const line of content.split(/\r?\n/)) {
+          let trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          // Support "export KEY=val"
+          if (trimmed.toLowerCase().startsWith("export ")) trimmed = trimmed.slice(7).trim();
+          const eq = trimmed.indexOf("=");
+          if (eq < 1) continue;
+          let key = trimmed.slice(0, eq).trim();
+          let val = trimmed.slice(eq + 1).trim();
+          // Strip surrounding quotes
+          val = val.replace(/^["']|["']$/g, "");
+          // Unescape simple cases
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (key) dotEnv[key] = val;
+        }
+        break; // first found wins
+      } catch {
+        // continue to next candidate
       }
-    } catch { /* no .env — fine */ }
+    }
     return dotEnv;
   }
 

@@ -48,6 +48,49 @@ export function resolveWindowsAudioDevice(ffmpegPath: string, log?: (m: string) 
   });
 }
 
+/** List avfoundation audio devices on macOS. Returns the first usable audio device name/index. */
+export function resolveMacAudioDevice(ffmpegPath: string, log?: (m: string) => void): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let stderr = "";
+    let proc: ChildProcess;
+    try {
+      // -list_devices true -i "" will print devices to stderr and exit non-zero.
+      proc = spawn(ffmpegPath, ["-f", "avfoundation", "-list_devices", "true", "-i", ""], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch {
+      resolve(undefined);
+      return;
+    }
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", () => resolve(undefined));
+    proc.on("exit", () => {
+      // Parse lines like: [0] Built-in Microphone or [1] External Mic
+      const lines = stderr.split(/\r?\n/);
+      const audioDevices: string[] = [];
+      let inAudio = false;
+      for (const line of lines) {
+        if (/AVFoundation audio devices/i.test(line)) {
+          inAudio = true;
+          continue;
+        }
+        if (inAudio && /\[AVFoundation .*devices/i.test(line)) break;
+        if (inAudio) {
+          const m = line.match(/\[(\d+)\]\s*(.+)/);
+          if (m) {
+            const idx = m[1];
+            const name = m[2].trim();
+            audioDevices.push(idx); // prefer index for avfoundation
+            audioDevices.push(name);
+          }
+        }
+      }
+      log?.(`[voice] avfoundation audio devices: ${audioDevices.join(" | ") || "(none)"}`);
+      // Prefer first non-default if possible, else first.
+      const preferred = audioDevices.find(d => !/default|built-in|internal/i.test(d)) || audioDevices[0];
+      resolve(preferred ? (preferred.match(/^\d+$/) ? preferred : `:${preferred}`) : undefined);
+    });
+  });
+}
+
 /**
  * Records the microphone via an ffmpeg child process. Stop is graceful — we send
  * `q` on ffmpeg's stdin so it finalizes the WAV header (a hard kill would leave
@@ -64,14 +107,21 @@ export class VoiceRecorder {
   async start(opts: StartOpts): Promise<void> {
     if (this.proc) throw new Error("Already recording.");
     let device = opts.device;
-    // dshow has no "default" pseudo-device, so on Windows we must name a real
-    // capture device. Enumerate and pick the first audio device when unset.
-    if (process.platform === "win32" && !device) {
-      device = await resolveWindowsAudioDevice(opts.ffmpegPath, opts.log);
-      if (!device) {
-        throw new Error(
-          "No microphone (DirectShow audio device) was found. Plug one in, or set grok.voiceInputDevice to its name.",
-        );
+    const plat = process.platform;
+    if (!device) {
+      if (plat === "win32") {
+        device = await resolveWindowsAudioDevice(opts.ffmpegPath, opts.log);
+        if (!device) {
+          throw new Error(
+            "No microphone (DirectShow audio device) was found. Plug one in, or set grok.voiceInputDevice to its name.",
+          );
+        }
+      } else if (plat === "darwin") {
+        device = await resolveMacAudioDevice(opts.ffmpegPath, opts.log);
+        if (!device) {
+          // fall back to default index 0
+          device = ":0";
+        }
       }
     }
 
