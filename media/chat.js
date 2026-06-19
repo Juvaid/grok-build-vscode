@@ -920,7 +920,7 @@
     // ── Model + effort header ─────────────────────────────────────────────
     const modelEffortSection = document.createElement("div");
     modelEffortSection.className = "popover-section popover-section-first";
-    modelEffortSection.textContent = "Model and Effort";
+    modelEffortSection.textContent = "Model & Reasoning Effort";
     gearPopover.appendChild(modelEffortSection);
 
     // ── Model + effort row ────────────────────────────────────────────────
@@ -935,13 +935,24 @@
     const nameBtn = document.createElement("button");
     nameBtn.className = "toolbar-btn model-name-btn" + (settingsLocked ? " disabled" : "");
     const modelName = modelDisplayName(state.currentModelId, state.availableModels) || "Grok Build";
-    nameBtn.innerHTML = `<span class="btn-label">${escapeHtml(truncate(modelName, 16))}</span>`;
+    nameBtn.innerHTML = `<span class="btn-label">${escapeHtml(truncate(modelName, 32))}</span>`;
     nameBtn.disabled = settingsLocked;
     nameBtn.title = settingsLocked
       ? `${modelName} — available once the session is ready`
       : `${modelName} — click to change`;
     if (!settingsLocked) nameBtn.onclick = (e) => { e.stopPropagation(); renderModelPicker(); };
     row.appendChild(nameBtn);
+
+    // Effort row: explicit label + dots for clarity
+    const effortRow = document.createElement("div");
+    effortRow.className = "effort-row";
+
+    const effortLabel = document.createElement("span");
+    effortLabel.className = "effort-label";
+    const currentEffortId = state.effort || "";
+    const effortLabelText = currentEffortId ? capitalize(currentEffortId) : "Default";
+    effortLabel.textContent = `Reasoning: ${effortLabelText}`;
+    effortRow.appendChild(effortLabel);
 
     const dotsEl = document.createElement("span");
     dotsEl.className = "effort-dots" + (settingsLocked ? " disabled" : "");
@@ -963,8 +974,9 @@
       };
       dotsEl.appendChild(dot);
     });
-    row.appendChild(dotsEl);
+    effortRow.appendChild(dotsEl);
     gearPopover.appendChild(row);
+    gearPopover.appendChild(effortRow);
 
     // ── Session ───────────────────────────────────────────────────────────
     addSection("Session");
@@ -1065,7 +1077,7 @@
       const el = document.createElement("div");
       const active = m.modelId === state.currentModelId;
       el.className = "toolbar-popover-item" + (active ? " active" : "");
-      el.innerHTML = `<span>${escapeHtml(truncate(m.name || m.modelId, 28))}</span>${active ? '<span class="popover-check">✓</span>' : ""}`;
+      el.innerHTML = `<span>${escapeHtml(truncate(m.name || m.modelId, 40))}</span>${active ? '<span class="popover-check">✓</span>' : ""}`;
       el.title = m.modelId;
       el.onclick = (e) => {
         e.stopPropagation();

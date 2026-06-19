@@ -868,20 +868,39 @@ textarea#input {
 
 /* ---- gear popover: model + effort row ---- */
 
-.gear-popover { min-width: 230px; }
+.gear-popover { min-width: 260px; }
 
 .model-effort-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding: 4px 6px;
+  gap: 8px;
+  padding: 4px 6px 2px;
+}
+
+/* New separate effort row for clarity — shows explicit label */
+.effort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px 6px;
+  font-size: 12px;
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  margin-top: 2px;
+}
+.effort-label {
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+  font-weight: 500;
+  min-width: 92px;
 }
 .model-name-btn {
   flex-shrink: 1;
   min-width: 0;
-  padding: 3px 5px;
+  padding: 4px 6px;
   font-size: 13px;
+  font-weight: 500;
+  text-align: left;
 }
 
 .effort-dots {
